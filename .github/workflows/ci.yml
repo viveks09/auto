@@ -1,0 +1,121 @@
+# .github/workflows/ci.yml
+# CI pipeline — runs on every push and PR
+# Vitest for Angular UI · JUnit 5 for Spring Boot/Kotlin
+# Playwright is NOT here — see playwright-nightly.yml
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true   # cancel older runs on same branch
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # Angular — Vitest component & service tests
+  # ─────────────────────────────────────────────────────────────────
+  frontend-tests:
+    name: Angular · Vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend   # adjust to your Angular project folder
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run Vitest
+        run: npx vitest run --reporter=dot --reporter=junit --outputFile=../test-results/vitest-junit.xml
+        env:
+          CI: true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-results
+          path: test-results/vitest-junit.xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-coverage
+          path: frontend/coverage/
+
+  # ─────────────────────────────────────────────────────────────────
+  # Spring Boot / Kotlin — JUnit 5 unit + slice tests
+  # H2 in-memory DB used for integration tests — no external service needed
+  # ─────────────────────────────────────────────────────────────────
+  backend-tests:
+    name: Spring Boot · JUnit 5
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend   # adjust to your Kotlin project folder
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Lint (ktlint)
+        run: mvn ktlint:check --batch-mode
+
+      - name: Run unit tests
+        run: mvn test --batch-mode
+
+      - name: Run integration tests
+        # H2 is on the test classpath — Spring Boot auto-configures it
+        # via application-test.yml (spring.datasource.url=jdbc:h2:mem:testdb)
+        run: mvn verify -P integration-tests --batch-mode
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-results
+          path: backend/target/surefire-reports/
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-coverage
+          path: backend/target/site/jacoco/
+
+  # ─────────────────────────────────────────────────────────────────
+  # Gate — both jobs must pass for PR merge
+  # ─────────────────────────────────────────────────────────────────
+  all-tests-pass:
+    name: All tests passed
+    needs: [frontend-tests, backend-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "✅ All CI tests passed — safe to merge"

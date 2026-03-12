@@ -1,0 +1,74 @@
+# .github/workflows/playwright-nightly.yml
+# Playwright E2E tests — runs nightly against staging, NOT on push/PR
+# Kept intentionally separate from ci.yml to avoid blocking the PR pipeline
+
+name: Playwright E2E (Nightly)
+
+on:
+  # Run at 2am IST (8:30pm UTC) every weekday
+  schedule:
+    - cron: '30 20 * * 1-5'
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Target URL to run tests against'
+        required: false
+        default: 'https://staging.yourapp.com'
+
+jobs:
+  playwright:
+    name: Playwright · All browsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright tests
+        run: npx playwright test
+        env:
+          BASE_URL:      ${{ inputs.base_url || 'https://staging.yourapp.com' }}
+          E2E_USERNAME:  ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD:  ${{ secrets.E2E_PASSWORD }}
+          CI:            true
+
+      - name: Upload Playwright HTML report
+        uses: actions/upload-artifact@v4
+        if: always()   # upload even on failure — useful for debugging
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload test videos (failures only)
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-videos-${{ github.run_id }}
+          path: test-results/
+          retention-days: 7
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "⚠️ Playwright nightly tests failed on `${{ github.repository }}`.\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
